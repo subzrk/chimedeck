@@ -1,6 +1,7 @@
 // POST /api/v1/boards/:id/members — add a workspace member to the board with an explicit role.
 // Requires board ADMIN role (or workspace OWNER/ADMIN).
-// Body: { userId: string, role?: 'ADMIN' | 'MEMBER' }
+// Body: { userId?: string, email?: string, role?: 'ADMIN' | 'MEMBER' } — one of
+// userId or email identifies the target; userId wins when both are supplied.
 // Adding someone who is already a board member is a conflict, not a role change:
 // use PATCH /boards/:id/members/:userId, which enforces the last-ADMIN invariant.
 import { randomUUID } from 'crypto';
@@ -27,6 +28,7 @@ type BoardMemberRequest = BoardVisibilityScopedRequest & {
 };
 type BoardMemberRow = { board_id: string; user_id: string; role: string };
 type MembershipRow = { user_id: string; workspace_id: string; role: string };
+type UserRow = { id: string; email: string };
 type MemberResponseRow = {
   id: string;
   email: string;
@@ -59,7 +61,7 @@ export async function handleAddBoardMember(req: Request, boardId: string): Promi
     if (!isBoardAdmin) return workspaceRoleError;
   }
 
-  let body: { userId?: string; role?: string };
+  let body: { userId?: string; email?: string; role?: string };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -69,10 +71,28 @@ export async function handleAddBoardMember(req: Request, boardId: string): Promi
     );
   }
 
-  const { userId } = body;
-  if (!userId || typeof userId !== 'string') {
+  // The target is identified by userId, or by the email of an existing account.
+  // userId wins when both are present.
+  let userId = typeof body.userId === 'string' ? body.userId : undefined;
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : undefined;
+
+  if (!userId && email) {
+    const user = await db<UserRow>('users').where({ email }).first<UserRow | undefined>();
+    if (!user) {
+      return Response.json(
+        {
+          name: 'user-not-found',
+          data: { message: `No account found for ${email}. Ask them to sign up first.` },
+        },
+        { status: 404 },
+      );
+    }
+    userId = user.id;
+  }
+
+  if (!userId) {
     return Response.json(
-      { name: 'missing-user-id', data: { message: 'userId is required' } },
+      { name: 'missing-user-id', data: { message: 'userId or email is required' } },
       { status: 400 },
     );
   }
